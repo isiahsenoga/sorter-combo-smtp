@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+ENV/
+output/
+reports/
+.agents/
+.DS_Store
+*.log
+data/combo/master.txt
+data/combo/master_keys.txt
+data/smtp/smtp_master.txt
+data/smtp/smtp_keys.txt
