@@ -27,7 +27,7 @@ except ImportError:
 
 from processor import (
     process_dataset, delete_scanned_files,
-    extract_by_domain, split_by_domains, split_folder_by_domains, master_path, reports_dir,
+    extract_by_domain, extract_by_email, split_by_domains, split_folder_by_domains, master_path, reports_dir,
 )
 from analytics import export_report
 from scanner import DEFAULT_KEYWORDS
@@ -209,10 +209,11 @@ class ExtractWorker(QThread):
     finished = Signal(str, int)
     error    = Signal(str)
 
-    def __init__(self, query: str, mode: str, source_file: str | None = None) -> None:
+    def __init__(self, query: str, mode: str, extract_type: str = "domain", source_file: str | None = None) -> None:
         super().__init__()
         self._query = query
         self._mode  = mode
+        self._extract_type = extract_type  # "domain" or "email"
         self._source_file = source_file
 
     def run(self) -> None:
@@ -220,12 +221,20 @@ class ExtractWorker(QThread):
             def cb(done: int, total: int) -> None:
                 self.progress.emit(done, total)
 
-            path, count = extract_by_domain(
-                self._query,
-                mode=self._mode,
-                source_file=self._source_file,
-                progress_cb=cb
-            )
+            if self._extract_type.lower() == "email":
+                path, count = extract_by_email(
+                    self._query,
+                    mode=self._mode,
+                    source_file=self._source_file,
+                    progress_cb=cb
+                )
+            else:
+                path, count = extract_by_domain(
+                    self._query,
+                    mode=self._mode,
+                    source_file=self._source_file,
+                    progress_cb=cb
+                )
             self.finished.emit(path, count)
         except Exception as exc:
             logger.exception("ExtractWorker raised")
@@ -484,7 +493,6 @@ class ScannerTab(QWidget):
         self._log.setReadOnly(True)
         self._log.setFont(QFont("Consolas", 11))
         log_vbox.addWidget(self._log)
-        self._clear_btn.clicked.connect(self._log.clear)
         splitter.addWidget(log_container)
         root.addWidget(splitter, stretch=1)
         self._apply_mode()
@@ -722,6 +730,7 @@ class ScannerTab(QWidget):
     
     def _finish_cancel(self) -> None:
         """Finish cancel operation and reset UI."""
+        self._worker = None
         self._timer.stop()
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
@@ -874,13 +883,13 @@ class ExtractorTab(QWidget):
         root.setContentsMargins(12, 10, 12, 10)
 
         hint = QLabel(
-            "Extract all entries matching a domain or TLD from the master file or a custom file.\n"
-            "Examples:  de   .de   gmail.com   .net   yahoo   @t-online.de"
+            "Extract all entries matching a domain/TLD or email from the master file or a custom file.\n"
+            "Examples:  de   .de   gmail.com   .net   yahoo   @t-online.de   user@gmail.com   john"
         )
         hint.setObjectName("hint_lbl")
         root.addWidget(hint)
 
-        # Source mode
+        # Source mode and extraction type
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("Mode:"))
         self._mode_combo = QComboBox()
@@ -890,6 +899,16 @@ class ExtractorTab(QWidget):
         self._mode_combo.setFixedWidth(120)
         self._mode_combo.currentIndexChanged.connect(lambda _: self._update_master_info())
         mode_row.addWidget(self._mode_combo)
+        
+        mode_row.addSpacing(30)
+        mode_row.addWidget(QLabel("Extract by:"))
+        self._extract_type_combo = QComboBox()
+        self._extract_type_combo.addItems(["Domain", "Email"])
+        self._extract_type_combo.setCurrentIndex(0)
+        self._extract_type_combo.setEditable(False)
+        self._extract_type_combo.setFixedWidth(120)
+        self._extract_type_combo.currentIndexChanged.connect(self._on_extract_type_changed)
+        mode_row.addWidget(self._extract_type_combo)
         mode_row.addStretch()
         root.addLayout(mode_row)
 
@@ -912,7 +931,8 @@ class ExtractorTab(QWidget):
 
         # Query row with autocomplete
         q_row = QHBoxLayout()
-        q_row.addWidget(QLabel("Domain / TLD:"))
+        self._query_label = QLabel("Domain / TLD:")
+        q_row.addWidget(self._query_label)
         self._query = QLineEdit()
         self._query.setPlaceholderText("e.g.  de   or   gmail.com   or   .net")
         self._query.returnPressed.connect(self._on_extract)
@@ -979,18 +999,22 @@ class ExtractorTab(QWidget):
 
     @staticmethod
     def _parse_queries_text(text: str) -> list[str]:
-        domains = re.findall(r"@?([A-Za-z0-9.-]+\.[A-Za-z]{2,})", text, flags=re.IGNORECASE)
+        raw_tokens = re.split(r"[\s,;]+", text.strip())
         cleaned: list[str] = []
-        for token in domains:
-            candidate = token.lower()
+        for token in raw_tokens:
+            candidate = token.strip().lower()
+            if not candidate:
+                continue
             if candidate.endswith('.txt'):
                 candidate = candidate[:-4]
             if candidate.endswith('.combo'):
                 candidate = candidate[:-6]
             if candidate.endswith('.smtp'):
                 candidate = candidate[:-5]
-            candidate = candidate.strip(' .')
+            candidate = candidate.lstrip('@.').rstrip('.').strip()
             if not candidate or any(sep in candidate for sep in ('\\', '/', ':')):
+                continue
+            if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,252}", candidate) is None:
                 continue
             if candidate not in cleaned:
                 cleaned.append(candidate)
@@ -1020,11 +1044,24 @@ class ExtractorTab(QWidget):
         if path and path[0]:
             self._custom_file.setText(path[0])
 
+    def _on_extract_type_changed(self) -> None:
+        extract_type = self._extract_type_combo.currentText()
+        if extract_type == "Email":
+            self._query_label.setText("Email:")
+            self._query.setPlaceholderText("e.g.  user@gmail.com   or   john   or   @gmail.com")
+        else:
+            self._query_label.setText("Domain / TLD:")
+            self._query.setPlaceholderText("e.g.  de   or   gmail.com   or   .net")
+        self._query.clear()
+
     def _on_extract(self) -> None:
         query = self._query.text().strip()
         mode  = (self._mode_combo.currentText() or "combo").strip().lower()
+        extract_type = self._extract_type_combo.currentText().lower()
+        
         if not query:
-            self._log_line("[ERROR] Enter a domain or TLD first.")
+            error_msg = "[ERROR] Enter a domain/TLD or email first."
+            self._log_line(error_msg)
             return
 
         # Use custom file if provided, otherwise use master
@@ -1050,10 +1087,11 @@ class ExtractorTab(QWidget):
         if self._eta_lbl:
             self._eta_lbl.setText("ETA: calculating…")
         self._ext_start_time = time.monotonic()
+        self._result_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         self._result_lbl.setText("")
-        self._log_line(f"Extracting '{query}' from {os.path.basename(source)}…")
+        self._log_line(f"Extracting '{query}' (by {extract_type}) from {os.path.basename(source)}…")
 
-        self._worker = ExtractWorker(query, mode, source)
+        self._worker = ExtractWorker(query, mode, extract_type, source)
         
         # Register worker with main window for cleanup
         main_window = self.window()
@@ -1106,9 +1144,11 @@ class ExtractorTab(QWidget):
         self._split_worker.start()
 
     def _on_split_finished(self, results: dict) -> None:
+        self._split_worker = None
         self._render_split_results(results, "Split complete")
 
     def _on_split_error(self, msg: str) -> None:
+        self._split_worker = None
         self._split_btn.setEnabled(True)
         self._extract_btn.setEnabled(True)
         self._progress.setRange(0, 100)
@@ -1211,6 +1251,7 @@ class ExtractorTab(QWidget):
                 self._eta_lbl.setText(f"Elapsed: {elapsed:.1f}s")
 
     def _on_ext_finished(self, path: str, count: int) -> None:
+        self._worker = None
         self._extract_btn.setEnabled(True)
         self._progress.setValue(100)
         self._progress.setFormat("Done")
@@ -1225,16 +1266,19 @@ class ExtractorTab(QWidget):
                 self._line_progress_lbl.setText(f"Lines scanned: {count:,}")
         self._update_master_info()
         if path:
+            self._result_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold;")
             self._result_lbl.setText(f"✓  {count:,} entries extracted  →  {path}")
             self._log_line(f"  Done. {count:,} entries  →  {path}")
         else:
-            self._result_lbl.setStyleSheet("color: #f38ba8;")
+            self._result_lbl.setStyleSheet("color: #f38ba8; font-weight: bold;")
             self._result_lbl.setText("No matching entries found.")
             self._log_line("  No matching entries found.")
 
     def _on_ext_error(self, msg: str) -> None:
+        self._worker = None
         self._extract_btn.setEnabled(True)
         self._progress.setFormat("Error")
+        self._result_lbl.setStyleSheet("color: #f38ba8; font-weight: bold;")
         self._log_line(f"[ERROR] {msg}")
 
 

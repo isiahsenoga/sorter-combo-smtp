@@ -26,6 +26,8 @@ EDGE_CASES_REJECT = [
     ("host:5189:test@test.c:none", "Password is 'none' (placeholder)"),
     ("host:5189:test@test.c:null", "Password is 'null' (placeholder)"),
     ("host:5189:test@test.c:password", "Password is 'password' (placeholder)"),
+    ("sondra:52:larry.lindgren@excite.com:5/13/1969", "Username-style line with email and date"),
+    ("sonia:601:bill_5315@msn.com:8/12/1979", "Username-style line with email and date"),
 ]
 
 # Edge cases: should be accepted

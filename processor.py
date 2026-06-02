@@ -20,17 +20,18 @@ _WRITE_BATCH = 20_000     # lines per write() call
 
 # Compiled once at module load — not inside any function
 _SPLIT_RE = re.compile(r"[:|,; \t]+")
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{2,253}$)(?!-)(?!.*\.\.)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)"
+    r"(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$"
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _valid_email_token(p: str) -> bool:
     """True if the token looks like user@domain.tld."""
-    at = p.rfind('@')
-    if at <= 0:
-        return False
-    dom = p[at + 1:]
-    return '.' in dom and not dom.startswith('.') and len(dom) > 2
+    return bool(_EMAIL_RE.match(p.strip()))
 
 
 def _pw_end(s: str) -> int:
@@ -93,32 +94,32 @@ def _looks_like_host_token(p: str) -> bool:
     """True if token could reasonably be an SMTP host or hostname.
     
     Must be either:
-    - A domain with at least one dot (mail.example.com)
-    - A qualified hostname pattern (smtp, mail-server)
+    - A dotted domain (smtp.example.com)
+    - A qualified bare hostname with SMTP-related keywords
     
     Rejects:
     - IPs (handled separately)
     - Empty or whitespace
     - Tokens with @
     - Pure numeric
-    - Single lowercase letters
+    - Single-letter tokens
+    - Generic usernames without SMTP semantics
     """
     if not p or '@' in p or p.isdigit():
         return False
-    
-    # Prefer domains with dots (most common case)
-    if '.' in p:
-        parts = p.split('.')
-        # Reject if any part is empty: "example..com" or ".example.com"
-        return all(part and len(part) > 0 for part in parts)
-    
-    # For bare hostnames, require at least 2 chars and alphanumeric + hyphens/underscores
-    # But reject single letters or very short generic terms
     if len(p) < 2:
         return False
-    
-    sanitized = p.replace("-", "").replace("_", "")
-    return sanitized.isalnum() and len(sanitized) >= 2
+
+    if '.' in p:
+        return bool(_HOSTNAME_RE.match(p))
+
+    sanitized = p.replace('-', '').replace('_', '')
+    if not (sanitized.isalnum() and len(sanitized) >= 2):
+        return False
+
+    lower = p.lower()
+    smtp_keywords = ('smtp', 'mail', 'mx', 'relay', 'host', 'server')
+    return any(keyword in lower for keyword in smtp_keywords)
 
 
 def _smtp_full(line: str) -> tuple[str, str, str] | None:
@@ -685,7 +686,18 @@ def process_dataset(
 # ── domain extractor ──────────────────────────────────────────────────────────
 
 def _domain_matches(dom: str, query: str) -> bool:
-    return dom == query or dom.endswith("." + query)
+    query = query.strip().lower()
+    if not query:
+        return False
+    if query.startswith("@"):
+        query = query[1:]
+    if query.startswith("."):
+        query = query[1:]
+    return (
+        dom == query or
+        dom.endswith("." + query) or
+        dom.startswith(query + ".")
+    )
 
 
 def extract_by_domain(
@@ -749,6 +761,80 @@ def extract_by_domain(
                 outf.write("\n".join(batch) + "\n")
     except OSError as exc:
         logger.error("extract_by_domain failed: %s", exc)
+        return "", 0
+
+    if count == 0:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        return "", 0
+
+    return out, count
+
+
+def extract_by_email(
+    query: str,
+    mode: str = "combo",
+    source_file: str | None = None,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+) -> tuple[str, int]:
+    """
+    Extract all lines whose email matches query (exact or partial).
+    query examples: "user@gmail.com", "user", "@gmail.com", "john"
+    Returns (output_filepath, count) or ("", 0).
+    """
+    query = query.strip().lower().lstrip("@")
+    if not query:
+        return "", 0
+
+    src = source_file or master_path(mode)
+    if not os.path.exists(src):
+        return "", 0
+
+    parse_fn = _smtp_full if mode == "smtp" else _combo_full
+
+    d     = os.path.join(_base(), "output")
+    os.makedirs(d, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_query = query.replace("@", "_at_").replace(".", "_")
+    out   = os.path.join(d, f"extract_email_{safe_query}_{stamp}.txt")
+
+    try:
+        total_size = os.path.getsize(src)
+    except OSError:
+        total_size = 0
+    total_est = max(total_size // 50, 1)
+
+    count   = 0
+    scanned = 0
+    try:
+        with (
+            open(src, "r", encoding="utf-8", errors="ignore", buffering=_IO_BUF) as inf,
+            open(out, "w", encoding="utf-8", buffering=_IO_BUF) as outf,
+        ):
+            batch: list[str] = []
+            for raw in inf:
+                scanned += 1
+                line = raw.strip()
+                if not line:
+                    continue
+                r = parse_fn(line)
+                if r and query in r[1]:  # r[1] is the email
+                    batch.append(r[0])
+                    count += 1
+                    if len(batch) >= _WRITE_BATCH:
+                        outf.write("\n".join(batch) + "\n")
+                        batch.clear()
+                if progress_cb and scanned % 50_000 == 0:
+                    try:
+                        progress_cb(scanned, total_est)
+                    except Exception:
+                        pass
+            if batch:
+                outf.write("\n".join(batch) + "\n")
+    except OSError as exc:
+        logger.error("extract_by_email failed: %s", exc)
         return "", 0
 
     if count == 0:
