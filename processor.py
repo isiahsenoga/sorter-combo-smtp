@@ -4,6 +4,7 @@ import os
 import re
 import time
 import io
+import sqlite3
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -278,37 +279,52 @@ def _mode_folder(mode: str) -> str:
     return os.path.join(_base(), "data", mode)
 
 
+def _master_db_path(mode: str = "combo") -> str:
+    """Path to SQLite master database."""
+    return os.path.join(_mode_folder(mode), "master.db" if mode == "combo" else "smtp.db")
+
+
 def master_path(mode: str = "combo") -> str:
-    base_data   = os.path.join(_base(), "data")
-    mode_folder = _mode_folder(mode)
-    fname = "master.txt" if mode == "combo" else "smtp_master.txt"
-
-    preferred = os.path.join(mode_folder, fname)
-    legacy    = os.path.join(base_data, fname)
-
-    for p in (preferred, legacy):
-        if os.path.exists(p):
-            return p
-
-    os.makedirs(mode_folder, exist_ok=True)
-    return preferred
+    """Returns path to master database (SQLite)."""
+    os.makedirs(_mode_folder(mode), exist_ok=True)
+    return _master_db_path(mode)
 
 
-def _keys_path(mode: str = "combo") -> str:
-    """Keys index file — stores only dedup keys for ultra-fast loading."""
-    base_data   = os.path.join(_base(), "data")
-    mode_folder = _mode_folder(mode)
-    fname = "master_keys.txt" if mode == "combo" else "smtp_keys.txt"
+def _init_master_db(db_path: str) -> None:
+    """Create or initialize master database with schema."""
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS entries (
+                key TEXT PRIMARY KEY,
+                entry TEXT NOT NULL
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_entry ON entries(entry)")
+        conn.commit()
+        conn.close()
+        logger.info("Initialized master database: %s", db_path)
+    except Exception as exc:
+        logger.error("Failed to initialize master database: %s", exc)
 
-    preferred = os.path.join(mode_folder, fname)
-    legacy    = os.path.join(base_data, fname)
 
-    for p in (preferred, legacy):
-        if os.path.exists(p):
-            return p
-
-    os.makedirs(mode_folder, exist_ok=True)
-    return preferred
+def _load_all_keys_from_db(db_path: str) -> set:
+    """Load all keys from SQLite database into memory set for fast dedup checks."""
+    keys: set = set()
+    if not os.path.exists(db_path):
+        return keys
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        cursor = conn.execute("SELECT key FROM entries")
+        for (key,) in cursor:
+            keys.add(key)
+        conn.close()
+        logger.info("Loaded %d keys from database", len(keys))
+    except Exception as exc:
+        logger.warning("Failed to load keys from database: %s", exc)
+    return keys
 
 
 def fresh_output_path(mode: str = "combo", line_count: int = 0) -> str:
@@ -338,206 +354,6 @@ def reports_dir() -> str:
 
 # ── master key loading (fast-path + ETA) ─────────────────────────────────────
 
-def _load_chunk(path: str, start: int, end: int) -> frozenset:
-    """Load a chunk of the keys file (for parallel loading)."""
-    try:
-        with open(path, "rb") as f:
-            f.seek(start)
-            data = f.read(end - start)
-        keys = frozenset(
-            l.decode("utf-8", "ignore") for l in data.split(b"\n")
-            if l.strip()
-        )
-        return keys
-    except Exception:
-        return frozenset()
-
-
-def _load_keys_file(
-    kpath: str,
-    _status: Callable[[str], None],
-    pause_check: Optional[Callable[[], bool]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> set:
-    """
-    Fast path: load the pre-built keys index file.
-    Uses parallel chunk loading for files > 10MB (CPU-count workers).
-    No parsing — each line IS already the dedup key.
-    """
-    try:
-        total_size = os.path.getsize(kpath)
-    except OSError:
-        total_size = 0
-
-    t0 = time.monotonic()
-
-    # For large files, use parallel chunk loading
-    if total_size > 10 * 1024 * 1024:  # > 10 MB
-        _status(f"Loading keys ({total_size // 1024 // 1024} MB) in parallel…")
-        cpu_count = max(2, (os.cpu_count() or 4) - 1)
-        chunk_size = total_size // cpu_count
-        chunks = []
-        for i in range(cpu_count):
-            start = i * chunk_size
-            end = total_size if i == cpu_count - 1 else (i + 1) * chunk_size
-            chunks.append((kpath, start, end))
-
-        keys: set = set()
-        try:
-            with ProcessPoolExecutor(max_workers=cpu_count) as ex:
-                for chunk_keys in ex.map(_load_chunk, *zip(*chunks)):
-                    keys.update(chunk_keys)
-                    if cancel_check and cancel_check():
-                        raise InterruptedError
-                    elapsed = time.monotonic() - t0
-                    pct = int(len(keys) / max(total_size // 100, 1))
-                    _status(f"Loading keys…  {len(keys):,}  elapsed {elapsed:.1f}s")
-        except InterruptedError:
-            raise
-        except Exception:
-            # Fallback to sequential if multiprocessing fails
-            keys = _load_keys_sequential(kpath, _status, t0, total_size, pause_check=pause_check, cancel_check=cancel_check)
-        else:
-            elapsed = time.monotonic() - t0
-            _status(f"Keys loaded — {len(keys):,} unique keys  ({elapsed:.1f}s)")
-            logger.info("Loaded %d keys in %.1fs from %s (parallel)", len(keys), elapsed, kpath)
-            return keys
-    else:
-        keys = _load_keys_sequential(
-            kpath,
-            _status,
-            t0,
-            total_size,
-            pause_check=pause_check,
-            cancel_check=cancel_check,
-        )
-
-    return keys
-
-
-def _load_keys_sequential(
-    kpath: str,
-    _status: Callable[[str], None],
-    t0: float,
-    total_size: int,
-    pause_check: Optional[Callable[[], bool]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> set:
-    """Sequential key loading (fallback and for small files)."""
-    CHUNK      = 1 << 22   # 4 MB
-    keys: set  = set()
-    partial    = b""
-    bytes_read = 0
-
-    try:
-        with open(kpath, "rb") as fh:
-            while True:
-                if pause_check:
-                    try:
-                        while not pause_check():
-                            time.sleep(0.1)
-                    except Exception:
-                        pass
-                if cancel_check and cancel_check():
-                    raise InterruptedError
-                chunk = fh.read(CHUNK)
-                if not chunk:
-                    break
-                data    = partial + chunk
-                lines   = data.split(b"\n")
-                partial = lines[-1]
-                for ln in lines[:-1]:
-                    k = ln.strip()
-                    if k:
-                        keys.add(k.decode("utf-8", "ignore"))
-                bytes_read += len(chunk)
-                elapsed = max(time.monotonic() - t0, 0.001)
-                rate    = bytes_read / elapsed
-                eta_s   = (total_size - bytes_read) / rate if rate > 0 else 0
-                pct     = int(bytes_read / total_size * 100) if total_size else 0
-                _status(
-                    f"Loading keys…  {len(keys):,}  ({pct}%)"
-                    f"  elapsed {elapsed:.1f}s  ETA ~{eta_s:.0f}s"
-                )
-        if partial.strip():
-            keys.add(partial.strip().decode("utf-8", "ignore"))
-        elapsed = time.monotonic() - t0
-        _status(f"Keys loaded — {len(keys):,} unique keys  ({elapsed:.1f}s)")
-        logger.info("Loaded %d keys in %.1fs from %s (sequential)", len(keys), elapsed, kpath)
-    except OSError as exc:
-        logger.warning("Could not read keys file: %s", exc)
-    return keys
-
-
-def _load_from_master(
-    mpath: str,
-    kpath: str,
-    key_fn: Callable[[str], str | None],
-    _status: Callable[[str], None],
-    pause_check: Optional[Callable[[], bool]] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> set:
-    """
-    Slow path: parse master.txt to build the keys set.
-    Simultaneously writes the keys index for fast loading on future runs.
-    Shows progress + ETA via _status.
-    """
-    try:
-        total_size = os.path.getsize(mpath)
-    except OSError:
-        total_size = 0
-
-    t0         = time.monotonic()
-    keys: set  = set()
-    bytes_read = 0
-    count      = 0
-    _REPORT    = 500_000
-
-    try:
-        with (
-            open(mpath, "r", encoding="utf-8", errors="ignore", buffering=_IO_BUF) as fh,
-            open(kpath, "w", encoding="utf-8", buffering=_IO_BUF) as kf,
-        ):
-            kbatch: list[str] = []
-            for raw in fh:
-                if pause_check:
-                    try:
-                        while not pause_check():
-                            time.sleep(0.1)
-                    except Exception:
-                        pass
-                if cancel_check and cancel_check():
-                    raise InterruptedError
-                bytes_read += len(raw)
-                line = raw.strip()
-                if line:
-                    k = key_fn(line)
-                    if k:
-                        keys.add(k)
-                        kbatch.append(k)
-                        if len(kbatch) >= _WRITE_BATCH:
-                            kf.write("\n".join(kbatch) + "\n")
-                            kbatch.clear()
-                count += 1
-                if count % _REPORT == 0:
-                    elapsed = max(time.monotonic() - t0, 0.001)
-                    rate    = bytes_read / elapsed
-                    eta_s   = (total_size - bytes_read) / rate if rate > 0 else 0
-                    pct     = int(bytes_read / total_size * 100) if total_size else 0
-                    _status(
-                        f"Building keys index…  {count:,} lines  ({pct}%)"
-                        f"  ETA ~{eta_s:.0f}s"
-                    )
-            if kbatch:
-                kf.write("\n".join(kbatch) + "\n")
-        elapsed = time.monotonic() - t0
-        _status(f"Keys indexed — {len(keys):,} unique keys  ({elapsed:.1f}s)")
-        logger.info("Built keys index: %d keys in %.1fs from %s", len(keys), elapsed, mpath)
-    except OSError as exc:
-        logger.warning("Could not load master: %s", exc)
-    return keys
-
-
 def load_master_keys(
     path: str,
     key_fn: Callable[[str], str | None],
@@ -547,10 +363,8 @@ def load_master_keys(
     cancel_check: Optional[Callable[[], bool]] = None,
 ) -> set:
     """
-    Load dedup keys for the given mode.
-    Fast path: reads a pre-built keys index file (no parsing, just strip+add).
-    Slow path: parses master.txt and builds the keys index for next time.
-    Both paths report progress + ETA via status_cb.
+    Load dedup keys from SQLite database or rebuild from old .txt if needed.
+    Returns set of all keys for O(1) duplicate checking during processing.
     """
     def _status(msg: str) -> None:
         if status_cb:
@@ -559,26 +373,37 @@ def load_master_keys(
             except Exception:
                 pass
 
-    if not os.path.exists(path):
-        return set()
-
-    kpath = _keys_path(mode)
-    if os.path.exists(kpath):
-        return _load_keys_file(
-            kpath,
-            _status,
+    db_path = _master_db_path(mode)
+    _init_master_db(db_path)
+    
+    t0 = time.monotonic()
+    _status("Loading master keys from database…")
+    keys = _load_all_keys_from_db(db_path)
+    elapsed = time.monotonic() - t0
+    
+    if keys:
+        _status(f"Loaded {len(keys):,} keys from database ({elapsed:.2f}s)")
+        logger.info("Loaded %d keys in %.2fs from %s", len(keys), elapsed, db_path)
+        return keys
+    
+    # Fallback: rebuild from old .txt master if it exists
+    if os.path.exists(path) and path.endswith(".db"):
+        # Path is already the database, nothing to migrate from
+        return keys
+    
+    if os.path.exists(path):
+        _status("Building database from existing master…")
+        logger.info("Migrating from old master file: %s", path)
+        return _rebuild_db_from_old_master(
+            path,
+            db_path,
+            key_fn,
+            status_cb=_status,
             pause_check=pause_check,
             cancel_check=cancel_check,
         )
-
-    return _load_from_master(
-        path,
-        kpath,
-        key_fn,
-        _status,
-        pause_check=pause_check,
-        cancel_check=cancel_check,
-    )
+    
+    return keys
 
 
 # ── parallel file reader ──────────────────────────────────────────────────────
@@ -686,7 +511,6 @@ def process_dataset(
     # ── load existing keys ────────────────────────────────────────────────────
     key_fn        = smtp_normalize_key if mode == "smtp" else normalize_key
     mpath         = master_path(mode)
-    kpath         = _keys_path(mode)
     _status("Loading master keys…")
     existing_keys = load_master_keys(
         mpath,
@@ -716,23 +540,26 @@ def process_dataset(
     fpath = fpath_temp
 
     try:
-        with (
-            open(mpath, "a", encoding="utf-8", buffering=_IO_BUF) as mf,
-            open(fpath, "w", encoding="utf-8", buffering=_IO_BUF) as ff,
-            open(kpath, "a", encoding="utf-8", buffering=_IO_BUF) as kf,
-        ):
-            mbatch: list[str] = []
+        # Open SQLite database and fresh output file
+        db_conn = sqlite3.connect(mpath, timeout=10.0)
+        db_conn.execute("PRAGMA synchronous=NORMAL")
+        _init_master_db(mpath)
+        
+        with open(fpath, "w", encoding="utf-8", buffering=_IO_BUF) as ff:
+            mbatch: list[tuple[str, str]] = []  # (key, entry) pairs for database
             fbatch: list[str] = []
-            kbatch: list[str] = []
 
             def _flush() -> None:
                 if mbatch:
-                    mf.write("\n".join(mbatch) + "\n")
-                    ff.write("\n".join(fbatch) + "\n")
-                    kf.write("\n".join(kbatch) + "\n")
+                    db_conn.executemany(
+                        "INSERT OR REPLACE INTO entries (key, entry) VALUES (?, ?)",
+                        mbatch
+                    )
+                    db_conn.commit()
                     mbatch.clear()
+                if fbatch:
+                    ff.write("\n".join(fbatch) + "\n")
                     fbatch.clear()
-                    kbatch.clear()
 
             for done_count, fp in enumerate(all_files, start=1):
                 _wait_if_paused()
@@ -782,9 +609,8 @@ def process_dataset(
 
                             seen_run.add(key)
                             existing_keys.add(key)
-                            mbatch.append(clean)
+                            mbatch.append((key, clean))
                             fbatch.append(clean)
-                            kbatch.append(key)
                             new_written += 1
                             if dom:
                                 domains[dom] += 1
@@ -807,10 +633,23 @@ def process_dataset(
 
             _status(f"Writing output…  {new_written:,} new entries")
             _flush()
+        
+        db_conn.close()
 
     except OSError as exc:
         logger.error("Output write failed: %s", exc)
         read_errors.append(str(exc))
+        try:
+            db_conn.close()
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error("Unexpected error during processing: %s", exc)
+        try:
+            db_conn.close()
+        except Exception:
+            pass
+        raise
 
     if new_written == 0:
         try:
