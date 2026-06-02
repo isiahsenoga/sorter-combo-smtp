@@ -209,11 +209,11 @@ class ExtractWorker(QThread):
     finished = Signal(str, int)
     error    = Signal(str)
 
-    def __init__(self, query: str, mode: str) -> None:
+    def __init__(self, query: str, mode: str, source_file: str | None = None) -> None:
         super().__init__()
         self._query = query
         self._mode  = mode
-        self._source_file: str | None = None
+        self._source_file = source_file
 
     def run(self) -> None:
         try:
@@ -300,6 +300,7 @@ class ScannerTab(QWidget):
         super().__init__()
         self._mode             = mode
         self._worker: ScanWorker | None = None
+        self._split_worker: SplitWorker | None = None
         self._last_stats: dict = {}
         self._elapsed_secs     = 0
         self._timer = QTimer(self)
@@ -588,6 +589,65 @@ class ScannerTab(QWidget):
         if main_window and hasattr(main_window, "_on_open_output_folder"):
             main_window._on_open_output_folder()
 
+    def _get_auto_split_queries(self) -> list[str]:
+        split_queries: list[str] = []
+        for query, cb in self._split_cbs.items():
+            if cb.isChecked():
+                split_queries.append(query)
+
+        raw_custom = self._split_custom.text().strip()
+        if raw_custom:
+            import re as _re
+            for tok in _re.split(r"[\s,]+", raw_custom):
+                tok = tok.strip()
+                if tok:
+                    split_queries.append(tok)
+
+        return split_queries
+
+    def _start_auto_split(self, fresh: str, split_queries: list[str]) -> None:
+        if not split_queries:
+            return
+        self._log_line(f"\n  Auto-separating by: {', '.join(split_queries)}")
+        self._log_line("  This may take a while for large files…")
+        self._progress.setRange(0, 0)
+        self._progress.setFormat("Auto-splitting…")
+        self._start_btn.setEnabled(False)
+        self._delete_btn.setEnabled(False)
+
+        self._split_worker = SplitWorker(split_queries, self._mode, fresh)
+        self._split_worker.stats_updated.connect(self._on_split_stats)
+        self._split_worker.log_message.connect(self._log_line)
+        self._split_worker.finished.connect(self._on_auto_split_finished)
+        self._split_worker.error.connect(self._on_auto_split_error)
+        self._split_worker.start()
+
+    def _on_auto_split_finished(self, results: dict) -> None:
+        self._split_worker = None
+        self._progress.setRange(0, 100)
+        self._progress.setValue(100)
+        self._progress.setFormat("Done")
+        self._log_line("\n  Auto-split complete")
+        if results:
+            for q, (path, count) in results.items():
+                if path:
+                    self._log_line(f"    {q:<25} {count:>8,}  →  {path}")
+                else:
+                    self._log_line(f"    {q:<25}       0   (no matches)")
+        if self._last_stats.get("scanned_files"):
+            self._delete_btn.setEnabled(True)
+            self._log_line('\n  Click "Delete Scanned Files" to remove the input files.')
+        self._start_btn.setEnabled(True)
+
+    def _on_auto_split_error(self, msg: str) -> None:
+        self._split_worker = None
+        self._progress.setRange(0, 100)
+        self._progress.setFormat("Error")
+        self._start_btn.setEnabled(True)
+        if self._last_stats.get("scanned_files"):
+            self._delete_btn.setEnabled(True)
+        self._log_line(f"[ERROR] Auto-split failed: {msg}")
+
     # ── actions ───────────────────────────────────────────────────────────────
 
     def _on_start(self) -> None:
@@ -748,30 +808,11 @@ class ScannerTab(QWidget):
         self._log_line(f"\n  Master: {master_path(self._mode)}")
         self._log_line(f"  Reports: {rpt}")
 
-        # Auto-split fresh output by domain
         if fresh:
-            split_queries: list[str] = []
-
-            for query, cb in self._split_cbs.items():
-                if cb.isChecked():
-                    split_queries.append(query)
-
-            raw_custom = self._split_custom.text().strip()
-            if raw_custom:
-                import re as _re
-                for tok in _re.split(r"[\s,]+", raw_custom):
-                    tok = tok.strip()
-                    if tok:
-                        split_queries.append(tok)
-
+            split_queries = self._get_auto_split_queries()
             if split_queries:
-                self._log_line(f"\n  Auto-separating by: {', '.join(split_queries)}")
-                results = split_by_domains(fresh, split_queries, mode=self._mode)
-                for q, (path, count) in results.items():
-                    if path:
-                        self._log_line(f"    {q:<25} {count:>8,}  →  {path}")
-                    else:
-                        self._log_line(f"    {q:<25}       0   (no matches)")
+                self._start_auto_split(fresh, split_queries)
+                return
 
         if stats.get("scanned_files"):
             self._delete_btn.setEnabled(True)
@@ -988,8 +1029,7 @@ class ExtractorTab(QWidget):
         self._result_lbl.setText("")
         self._log_line(f"Extracting '{query}' from {os.path.basename(source)}…")
 
-        self._worker = ExtractWorker(query, mode)
-        self._worker._source_file = source  # type: ignore[attr-defined]  # Pass the source file to the worker
+        self._worker = ExtractWorker(query, mode, source)
         self._worker.progress.connect(self._on_ext_progress)
         self._worker.finished.connect(self._on_ext_finished)
         self._worker.error.connect(self._on_ext_error)
