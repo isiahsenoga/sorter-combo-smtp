@@ -92,14 +92,17 @@ QScrollBar::handle:vertical { background: #45475a; border-radius: 4px; min-heigh
 QScrollBar::handle:vertical:hover { background: #585b70; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 
-QCheckBox { spacing: 6px; }
-QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #45475a; border-radius: 3px;
-                       background: #313244; }
-QCheckBox::indicator:checked {
-    image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12'><rect width='12' height='12' rx='3' fill='%2389b4fa'/><path d='M3.5 6.5L5.5 8.5L9.5 4.5' stroke='%23ffffff' stroke-width='1.5' fill='none'/></svg>");
-    border-color: #89b4fa;
-}
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator { width: 18px; height: 18px; border: 1px solid #6c7086; border-radius: 4px;
+                       background: #1e1e2e; }
+QCheckBox::indicator:checked { background: #89b4fa; border-color: #89b4fa; }
+QCheckBox::indicator:checked:hover { background: #89b4fa; }
 QCheckBox::indicator:unchecked:hover { border-color: #89b4fa; background: rgba(137,180,250,0.15); }
+
+QPushButton#view_output_btn { background: #89b4fa; color: #1e1e2e; font-weight: bold; border: none; }
+QPushButton#view_output_btn:hover { background: #b4befe; }
+QPushButton#clear_btn { background: #272735; border-color: #5b5f76; }
+QPushButton#clear_btn:hover { background: #3c3f55; }
 
 QLabel { color: #cdd6f4; }
 QLabel#hint_lbl  { color: #6c7086; font-size: 11px; }
@@ -331,15 +334,18 @@ class ScannerTab(QWidget):
         row = QHBoxLayout()
         self._folder = QLineEdit()
         self._folder.setPlaceholderText("Select or paste folder path…")
-        default_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "combo" if self._mode == "combo" else "smtp")
-        if os.path.isdir(default_folder):
-            self._folder.setPlaceholderText(default_folder)
         browse = QPushButton("Browse…")
         browse.setFixedWidth(90)
         browse.clicked.connect(self._on_browse)
         row.addWidget(self._folder)
         row.addWidget(browse)
         root.addLayout(row)
+
+        self._folder_hint = QLabel()
+        self._folder_hint.setObjectName("hint_lbl")
+        self._folder_hint.setWordWrap(True)
+        root.addWidget(self._folder_hint)
+        self._update_folder_hint()
 
         # ── Options group ─────────────────────────────────────────────────────
         grp = QGroupBox("Options")
@@ -431,6 +437,7 @@ class ScannerTab(QWidget):
         self._cancel_btn.clicked.connect(self._on_cancel)
         self._delete_btn.clicked.connect(self._on_delete)
         self._clear_btn = QPushButton("Clear Log")
+        self._clear_btn.setObjectName("clear_btn")
         self._view_output_btn = QPushButton("View Output")
         self._view_output_btn.setObjectName("view_output_btn")
         self._view_output_btn.clicked.connect(self._on_view_output)
@@ -509,6 +516,7 @@ class ScannerTab(QWidget):
         self._fmt_cb.setToolTip(fmt_tip)
         self._start_btn.setText(start_label)
         self._master_lbl.setText(f"Master: {master_path(master_mode)}")
+        self._update_folder_hint()
 
     def _tick(self) -> None:
         self._elapsed_secs += 1
@@ -557,6 +565,24 @@ class ScannerTab(QWidget):
         if path:
             self._folder.setText(path)
 
+    def _default_scan_folder(self) -> str:
+        return os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "data",
+            "combo" if self._mode == "combo" else "smtp",
+        )
+
+    def _update_folder_hint(self) -> None:
+        default_folder = self._default_scan_folder()
+        if os.path.isdir(default_folder):
+            self._folder.setPlaceholderText(default_folder)
+            self._folder_hint.setText(
+                f"Leave this blank to scan the default folder for {self._mode.upper()} mode."
+            )
+        else:
+            self._folder.setPlaceholderText("Select or paste folder path…")
+            self._folder_hint.setText("Select a folder to scan or browse to choose one.")
+
     def _on_view_output(self) -> None:
         main_window = self.window()
         if main_window and hasattr(main_window, "_on_open_output_folder"):
@@ -566,7 +592,14 @@ class ScannerTab(QWidget):
 
     def _on_start(self) -> None:
         folder = self._folder.text().strip().strip('"').strip("'")
-        if not folder or not os.path.isdir(folder):
+        if not folder:
+            folder = self._default_scan_folder()
+            if folder and os.path.isdir(folder):
+                self._log_line(f"[INFO] Using default folder: {folder}")
+            else:
+                self._log_line("[ERROR] No scan folder selected and default folder is unavailable.")
+                return
+        if not os.path.isdir(folder):
             self._log_line(f"[ERROR] Not a valid directory: {folder!r}")
             return
 

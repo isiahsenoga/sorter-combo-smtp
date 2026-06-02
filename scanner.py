@@ -74,7 +74,7 @@ def is_combo_file(
     """
     Sample up to sample_size non-empty lines.
     Returns True if >= threshold fraction look like email:pass combos
-    (contain '@' and at least one separator ':' or '|').
+    (contain '@' and at least one common separator such as ':', '|', ',', ';', or whitespace).
     Returns False for unreadable files so they get skipped.
     """
     hits = 0
@@ -86,7 +86,7 @@ def is_combo_file(
                 if not line:
                     continue
                 checked += 1
-                if "@" in line and (":" in line or "|" in line):
+                if "@" in line and _SEP_RE.search(line):
                     hits += 1
                 if checked >= sample_size:
                     break

@@ -58,22 +58,22 @@ def _combo_full(line: str) -> tuple[str, str, str] | None:
     # Fast path: token before first ':' is the email (email:pass format)
     ci = s.find(':')
     if ci > 0:
-        left = s[:ci]
+        left = s[:ci].strip()
         if _valid_email_token(left):
             email  = left.lower()
-            right  = s[ci + 1:]
-            pw     = right[:_pw_end(right)]
+            right  = s[ci + 1:].lstrip()
+            pw     = right[:_pw_end(right)].strip()
             domain = email.split('@', 1)[1]
             return f"{email}:{pw}", email, domain
 
     # Pipe separator
     pi = s.find('|')
     if 0 < pi < len(s) - 1:
-        left = s[:pi]
+        left = s[:pi].strip()
         if _valid_email_token(left):
             email  = left.lower()
-            right  = s[pi + 1:]
-            pw     = right[:_pw_end(right)]
+            right  = s[pi + 1:].lstrip()
+            pw     = right[:_pw_end(right)].strip()
             domain = email.split('@', 1)[1]
             return f"{email}:{pw}", email, domain
 
