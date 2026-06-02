@@ -89,30 +89,62 @@ def _combo_full(line: str) -> tuple[str, str, str] | None:
 
 
 def _looks_like_host_token(p: str) -> bool:
-    """True if token could reasonably be an SMTP host or hostname."""
+    """True if token could reasonably be an SMTP host or hostname.
+    
+    Must be either:
+    - A domain with at least one dot (mail.example.com)
+    - A qualified hostname pattern (smtp, mail-server)
+    
+    Rejects:
+    - IPs (handled separately)
+    - Empty or whitespace
+    - Tokens with @
+    - Pure numeric
+    - Single lowercase letters
+    """
     if not p or '@' in p or p.isdigit():
         return False
+    
+    # Prefer domains with dots (most common case)
     if '.' in p:
-        return True
-    # Allow bare hostnames such as "smtp" or "mail-server"
-    return p.replace("-", "").replace("_", "").isalnum()
+        parts = p.split('.')
+        # Reject if any part is empty: "example..com" or ".example.com"
+        return all(part and len(part) > 0 for part in parts)
+    
+    # For bare hostnames, require at least 2 chars and alphanumeric + hyphens/underscores
+    # But reject single letters or very short generic terms
+    if len(p) < 2:
+        return False
+    
+    sanitized = p.replace("-", "").replace("_", "")
+    return sanitized.isalnum() and len(sanitized) >= 2
 
 
 def _smtp_full(line: str) -> tuple[str, str, str] | None:
     """
-    Single-pass SMTP parse.
+    Single-pass SMTP parse with strict validation.
     Returns (canonical, key, domain) or None.
       canonical = "host:port:email:password"
       key       = "email:host"  (dedup key)
       domain    = email domain
+    
+    Validation rules (strict):
+    - Must have 4+ parts when split
+    - Email must be valid format (user@domain.tld)
+    - Port must be numeric and in range 1-65535
+    - Host must be a valid domain/hostname
+    - Password must be non-empty and >= 2 chars (not just "a" or single char)
+    - Reject entries with empty/missing components
     """
     s = line.strip()
     if not s or '@' not in s:
         return None
+    
     parts = _SPLIT_RE.split(s)
     if len(parts) < 4:
         return None
 
+    # Find email token
     email_idx = next((i for i, p in enumerate(parts) if _valid_email_token(p)), None)
     if email_idx is None:
         return None
@@ -122,16 +154,20 @@ def _smtp_full(line: str) -> tuple[str, str, str] | None:
     port = ""
     pw = ""
 
-    # Common pattern: host:port:email:password
+    # Primary pattern: host:port:email:password (most common)
     if email_idx >= 2:
         candidate_host = parts[email_idx - 2]
         candidate_port = parts[email_idx - 1]
-        if candidate_port.isdigit() and 1 <= int(candidate_port) <= 65535 and _looks_like_host_token(candidate_host):
+        
+        # Validate port: must be numeric, non-empty, in valid range
+        if (candidate_port and candidate_port.isdigit() and 
+            1 <= int(candidate_port) <= 65535 and 
+            _looks_like_host_token(candidate_host)):
             host = candidate_host.lower()
             port = candidate_port
             pw = parts[email_idx + 1] if email_idx + 1 < len(parts) else ""
 
-    # Fallback: find a plausible host before the email token
+    # Fallback: find host before email, then port before host
     if not host:
         host_idx = next(
             (i for i, p in enumerate(parts[:email_idx]) if _looks_like_host_token(p)),
@@ -141,6 +177,8 @@ def _smtp_full(line: str) -> tuple[str, str, str] | None:
             return None
 
         host = parts[host_idx].lower()
+        
+        # Find port: must be numeric and in valid range
         port = next(
             (
                 parts[i]
@@ -149,18 +187,30 @@ def _smtp_full(line: str) -> tuple[str, str, str] | None:
             ),
             "",
         )
+        
+        # Get password from part after email
         if email_idx + 1 < len(parts):
             pw = parts[email_idx + 1]
         else:
+            # Last resort: find any part that isn't host, port, or email
             pw = next(
                 (
                     p for i, p in enumerate(parts)
-                    if i not in {host_idx, email_idx} and p != port
+                    if i not in {host_idx, email_idx} and p != port and p
                 ),
                 "",
             )
 
-    if not host:
+    # Strict validation: require all components
+    if not host or not port or not email or not pw:
+        return None
+    
+    # Password must be at least 2 chars (reject single char passwords like "a" or "1")
+    if len(pw) < 2:
+        return None
+    
+    # Reject obviously invalid passwords (too common placeholders)
+    if pw.lower() in ("none", "null", "n/a", "na", "pass", "password", "pwd"):
         return None
 
     domain = email.split('@', 1)[1]

@@ -105,14 +105,32 @@ def is_smtp_file(
 ) -> bool:
     """
     Sample up to sample_size non-empty lines.
-    Returns True if >= threshold fraction look like SMTP credentials
-    (host:port:user@domain:pass or similar).
+    Returns True if >= threshold fraction look like valid SMTP credentials.
+    Strict validation: host:port:email:pass with all components present.
     """
+    def _looks_like_port(p: str) -> bool:
+        try:
+            port_num = int(p)
+            return 1 <= port_num <= 65535
+        except (ValueError, TypeError):
+            return False
+    
     def _looks_like_email_token(p: str) -> bool:
         if "@" not in p:
             return False
         user, _, dom = p.partition("@")
         return bool(user) and "." in dom and not dom.startswith(".")
+
+    def _looks_like_host_token(p: str) -> bool:
+        if not p or '@' in p or p.isdigit():
+            return False
+        if '.' in p:
+            parts = p.split('.')
+            return all(part and len(part) > 0 for part in parts)
+        if len(p) < 2:
+            return False
+        sanitized = p.replace("-", "").replace("_", "")
+        return sanitized.isalnum() and len(sanitized) >= 2
 
     hits = 0
     checked = 0
@@ -124,21 +142,36 @@ def is_smtp_file(
                     continue
                 checked += 1
                 parts = _SEP_RE.split(line)
+                
+                # Must have at least 4 parts
                 if len(parts) < 4:
                     if checked >= sample_size:
                         break
                     continue
+                
+                # Find email token
                 email_idx = next((i for i, p in enumerate(parts) if _looks_like_email_token(p)), None)
                 if email_idx is None:
                     if checked >= sample_size:
                         break
                     continue
-                if email_idx >= 2 and parts[email_idx - 1].isdigit():
+                
+                # Check for valid port in expected position
+                valid_entry = False
+                if email_idx >= 2:
+                    # Pattern: host:port:email:password
+                    if (_looks_like_host_token(parts[email_idx - 2]) and 
+                        _looks_like_port(parts[email_idx - 1])):
+                        # Check password exists
+                        if email_idx + 1 < len(parts) and parts[email_idx + 1]:
+                            valid_entry = True
+                
+                if valid_entry:
                     hits += 1
-                elif len(parts[0]) and parts[1].isdigit():
-                    hits += 1
+                
                 if checked >= sample_size:
                     break
     except OSError:
         return False
+    
     return checked > 0 and (hits / checked) >= threshold
