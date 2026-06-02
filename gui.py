@@ -9,12 +9,21 @@ from collections import Counter
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QStringListModel, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
-from PySide6.QtWidgets import (
-    QAction, QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QSplitter,
-    QTabWidget, QTextEdit, QVBoxLayout, QWidget,
-)
+try:
+    from PySide6.QtWidgets import (
+        QAction, QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QGroupBox,
+        QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+        QMessageBox, QProgressBar, QPushButton, QSplitter,
+        QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    )
+except ImportError:
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import (
+        QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QGroupBox,
+        QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+        QMessageBox, QProgressBar, QPushButton, QSplitter,
+        QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+    )
 
 from processor import (
     process_dataset, delete_scanned_files,
