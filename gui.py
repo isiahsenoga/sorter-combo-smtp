@@ -95,8 +95,11 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QCheckBox { spacing: 6px; }
 QCheckBox::indicator { width: 15px; height: 15px; border: 1px solid #45475a; border-radius: 3px;
                        background: #313244; }
-QCheckBox::indicator:checked   { background: #89b4fa; border-color: #89b4fa; }
-QCheckBox::indicator:unchecked:hover { border-color: #89b4fa; }
+QCheckBox::indicator:checked {
+    image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12'><rect width='12' height='12' rx='3' fill='%2389b4fa'/><path d='M3.5 6.5L5.5 8.5L9.5 4.5' stroke='%23ffffff' stroke-width='1.5' fill='none'/></svg>");
+    border-color: #89b4fa;
+}
+QCheckBox::indicator:unchecked:hover { border-color: #89b4fa; background: rgba(137,180,250,0.15); }
 
 QLabel { color: #cdd6f4; }
 QLabel#hint_lbl  { color: #6c7086; font-size: 11px; }
@@ -329,10 +332,8 @@ class ScannerTab(QWidget):
         self._folder = QLineEdit()
         self._folder.setPlaceholderText("Select or paste folder path…")
         default_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "combo" if self._mode == "combo" else "smtp")
-        if not os.path.isdir(default_folder):
-            default_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         if os.path.isdir(default_folder):
-            self._folder.setText(default_folder)
+            self._folder.setPlaceholderText(default_folder)
         browse = QPushButton("Browse…")
         browse.setFixedWidth(90)
         browse.clicked.connect(self._on_browse)
@@ -430,11 +431,15 @@ class ScannerTab(QWidget):
         self._cancel_btn.clicked.connect(self._on_cancel)
         self._delete_btn.clicked.connect(self._on_delete)
         self._clear_btn = QPushButton("Clear Log")
+        self._view_output_btn = QPushButton("View Output")
+        self._view_output_btn.setObjectName("view_output_btn")
+        self._view_output_btn.clicked.connect(self._on_view_output)
         btn_row.addWidget(self._start_btn)
         btn_row.addWidget(self._pause_btn)
         btn_row.addWidget(self._cancel_btn)
         btn_row.addSpacing(16)
         btn_row.addWidget(self._delete_btn)
+        btn_row.addWidget(self._view_output_btn)
         btn_row.addWidget(self._clear_btn)
         btn_row.addStretch()
         root.addLayout(btn_row)
@@ -551,6 +556,11 @@ class ScannerTab(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Select folder")
         if path:
             self._folder.setText(path)
+
+    def _on_view_output(self) -> None:
+        main_window = self.window()
+        if main_window and hasattr(main_window, "_on_open_output_folder"):
+            main_window._on_open_output_folder()
 
     # ── actions ───────────────────────────────────────────────────────────────
 
@@ -1129,8 +1139,8 @@ class ToolkitGUI(QMainWindow):
         self.resize(1020, 740)
 
         tabs = QTabWidget()
-        tabs.addTab(ScannerTab("combo"), "  Combo Scanner  ")
-        tabs.addTab(ScannerTab("smtp"),  "  SMTP Merger    ")
+        tabs.addTab(ScannerTab("combo"), "  Scanner  ")
+        tabs.addTab(ScannerTab("smtp"),  "  Merge    ")
         tabs.addTab(ExtractorTab(),      "  Domain Extractor  ")
         self.setCentralWidget(tabs)
         self._create_menus()
