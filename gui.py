@@ -691,6 +691,12 @@ class ScannerTab(QWidget):
         self._timer.start()
 
         self._worker = ScanWorker(folder, settings)
+        
+        # Register worker with main window for cleanup
+        main_window = self.window()
+        if main_window and hasattr(main_window, 'register_worker'):
+            main_window.register_worker(self._worker)
+        
         self._worker.progress.connect(self._on_progress)
         self._worker.status.connect(self._on_status)
         self._worker.log_msg.connect(self._log_line)
@@ -705,6 +711,23 @@ class ScannerTab(QWidget):
             self._cancel_btn.setEnabled(False)
             self._status_lbl.setText("Cancelling…")
             self._log_line("[INFO] Cancelling…")
+            
+            # Use a timer to wait for thread to finish
+            def wait_for_cancel():
+                if self._worker.isRunning():
+                    self._worker.wait(timeout=1000)
+                self._finish_cancel()
+            
+            QTimer.singleShot(100, wait_for_cancel)
+    
+    def _finish_cancel(self) -> None:
+        """Finish cancel operation and reset UI."""
+        self._timer.stop()
+        self._progress.setRange(0, 100)
+        self._progress.setValue(0)
+        self._progress.setFormat("Cancelled")
+        self._start_btn.setEnabled(True)
+        self._status_lbl.setText("Cancelled")
 
     def _on_pause(self) -> None:
         if self._worker and self._worker.isRunning():
@@ -1014,7 +1037,8 @@ class ExtractorTab(QWidget):
         else:
             source = master_path(mode)
             if not os.path.exists(source):
-                self._log_line(f"[ERROR] Master file not found: {source}")
+                self._log_line(f"[ERROR] Master database not found: {source}")
+                self._log_line(f"[INFO] Hint: Run a scan first to create the master database.")
                 return
 
         self._extract_btn.setEnabled(False)
@@ -1030,6 +1054,12 @@ class ExtractorTab(QWidget):
         self._log_line(f"Extracting '{query}' from {os.path.basename(source)}…")
 
         self._worker = ExtractWorker(query, mode, source)
+        
+        # Register worker with main window for cleanup
+        main_window = self.window()
+        if main_window and hasattr(main_window, 'register_worker'):
+            main_window.register_worker(self._worker)
+        
         self._worker.progress.connect(self._on_ext_progress)
         self._worker.finished.connect(self._on_ext_finished)
         self._worker.error.connect(self._on_ext_error)
@@ -1051,7 +1081,8 @@ class ExtractorTab(QWidget):
         else:
             source = master_path(mode)
             if not os.path.exists(source):
-                self._log_line(f"[ERROR] Master file not found: {source}")
+                self._log_line(f"[ERROR] Master database not found: {source}")
+                self._log_line(f"[INFO] Hint: Run a scan first to create the master database.")
                 return
 
         self._split_btn.setEnabled(False)
@@ -1062,6 +1093,12 @@ class ExtractorTab(QWidget):
         self._log_line(f"Splitting {os.path.basename(source)} by: {', '.join(queries)}")
 
         self._split_worker = SplitWorker(queries, mode, source)
+        
+        # Register worker with main window for cleanup
+        main_window = self.window()
+        if main_window and hasattr(main_window, 'register_worker'):
+            main_window.register_worker(self._split_worker)
+        
         self._split_worker.finished.connect(self._on_split_finished)
         self._split_worker.error.connect(self._on_split_error)
         self._split_worker.stats_updated.connect(self._on_split_stats)
@@ -1210,6 +1247,9 @@ class ToolkitGUI(QMainWindow):
         self.setWindowTitle("Dataset Toolkit")
         self.setMinimumSize(860, 640)
         self.resize(1020, 740)
+        
+        # Track all worker threads for cleanup
+        self._all_workers: list = []
 
         tabs = QTabWidget()
         tabs.addTab(ScannerTab("combo"), "  Scanner  ")
@@ -1217,6 +1257,22 @@ class ToolkitGUI(QMainWindow):
         tabs.addTab(ExtractorTab(),      "  Domain Extractor  ")
         self.setCentralWidget(tabs)
         self._create_menus()
+        
+    def register_worker(self, worker) -> None:
+        """Register a worker thread for cleanup on exit."""
+        if worker not in self._all_workers:
+            self._all_workers.append(worker)
+    
+    def closeEvent(self, event) -> None:
+        """Properly cleanup all running threads before closing."""
+        # Cancel and wait for all workers
+        for worker in self._all_workers:
+            if hasattr(worker, 'isRunning') and worker.isRunning():
+                if hasattr(worker, 'cancel'):
+                    worker.cancel()
+                worker.wait(timeout=2000)  # Wait max 2 seconds
+        
+        event.accept()
 
     def _create_menus(self) -> None:
         menubar = self.menuBar()
