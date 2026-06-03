@@ -262,6 +262,15 @@ def canonicalize_smtp(line: str) -> str | None:
     return r[0] if r else None
 
 
+def _extract_email(result: tuple[str, str, str] | None) -> str | None:
+    if not result:
+        return None
+    key = result[1]
+    if '@' in key:
+        return key.split(':', 1)[0].lower()
+    return None
+
+
 def extract_domain(line: str) -> str | None:
     r = _combo_full(line)
     if r:
@@ -349,6 +358,18 @@ def fresh_output_path(mode: str = "combo", line_count: int = 0) -> str:
 
 def reports_dir() -> str:
     d = os.path.join(_base(), "reports")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def output_dir(mode: str = "combo", emails_only: bool = False) -> str:
+    d = os.path.join(_base(), "output")
+    if emails_only:
+        d = os.path.join(d, "email")
+    elif mode == "smtp":
+        d = os.path.join(d, "smtp")
+    else:
+        d = os.path.join(d, "combo")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -704,11 +725,13 @@ def extract_by_domain(
     query: str,
     mode: str = "combo",
     source_file: str | None = None,
+    emails_only: bool = False,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[str, int]:
     """
     Extract all lines whose email domain matches query.
     query examples: "de", ".de", "@gmail.de", "gmail.com", ".net"
+    If emails_only is True, write only the matching email addresses.
     Returns (output_filepath, count) or ("", 0).
     """
     query = query.strip().lower().lstrip("@").lstrip(".")
@@ -719,12 +742,15 @@ def extract_by_domain(
     if not os.path.exists(src):
         return "", 0
 
+    is_combo = mode == "combo"
     parse_fn = _smtp_full if mode == "smtp" else _combo_full
 
-    d     = os.path.join(_base(), "output")
-    os.makedirs(d, exist_ok=True)
+    d     = output_dir(mode, emails_only)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out   = os.path.join(d, f"extract_{query}_{stamp}.txt")
+    safe_query = query.replace("@", "_at_").replace(".", "_")
+    filename = "extract_emails_" if emails_only else "extract_"
+    out   = os.path.join(d, f"{filename}{safe_query}_{stamp}.txt")
+    seen: set[str] = set() if emails_only else set()
 
     try:
         total_size = os.path.getsize(src)
@@ -745,13 +771,77 @@ def extract_by_domain(
                 line = raw.strip()
                 if not line:
                     continue
-                r = parse_fn(line)
-                if r and _domain_matches(r[2], query):
-                    batch.append(r[0])
-                    count += 1
-                    if len(batch) >= _WRITE_BATCH:
-                        outf.write("\n".join(batch) + "\n")
-                        batch.clear()
+
+                if is_combo:
+                    if ':' not in line or '@' not in line:
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    email = line.split(':', 1)[0].strip().lower()
+                    if '@' not in email:
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    domain = email.split('@', 1)[1]
+                    if not _domain_matches(domain, query):
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    if emails_only:
+                        if email in seen:
+                            if progress_cb and scanned % 50_000 == 0:
+                                try:
+                                    progress_cb(scanned, total_est)
+                                except Exception:
+                                    pass
+                            continue
+                        seen.add(email)
+                        batch.append(email)
+                    else:
+                        batch.append(line)
+                else:
+                    r = parse_fn(line)
+                    if not r or not _domain_matches(r[2], query):
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    if emails_only:
+                        email = _extract_email(r)
+                        if not email:
+                            continue
+                        if email in seen:
+                            if progress_cb and scanned % 50_000 == 0:
+                                try:
+                                    progress_cb(scanned, total_est)
+                                except Exception:
+                                    pass
+                            continue
+                        seen.add(email)
+                        batch.append(email)
+                    else:
+                        batch.append(r[0])
+
+                count += 1
+                if len(batch) >= _WRITE_BATCH:
+                    outf.write("\n".join(batch) + "\n")
+                    batch.clear()
+
                 if progress_cb and scanned % 50_000 == 0:
                     try:
                         progress_cb(scanned, total_est)
@@ -777,11 +867,13 @@ def extract_by_email(
     query: str,
     mode: str = "combo",
     source_file: str | None = None,
+    emails_only: bool = False,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[str, int]:
     """
     Extract all lines whose email matches query (exact or partial).
     query examples: "user@gmail.com", "user", "@gmail.com", "john"
+    If emails_only is True, write only the matching email addresses.
     Returns (output_filepath, count) or ("", 0).
     """
     query = query.strip().lower().lstrip("@")
@@ -792,13 +884,15 @@ def extract_by_email(
     if not os.path.exists(src):
         return "", 0
 
+    is_combo = mode == "combo"
     parse_fn = _smtp_full if mode == "smtp" else _combo_full
 
-    d     = os.path.join(_base(), "output")
-    os.makedirs(d, exist_ok=True)
+    d     = output_dir(mode, emails_only)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_query = query.replace("@", "_at_").replace(".", "_")
-    out   = os.path.join(d, f"extract_email_{safe_query}_{stamp}.txt")
+    filename = "extract_email_only_" if emails_only else "extract_email_"
+    out   = os.path.join(d, f"{filename}{safe_query}_{stamp}.txt")
+    seen: set[str] = set() if emails_only else set()
 
     try:
         total_size = os.path.getsize(src)
@@ -819,13 +913,65 @@ def extract_by_email(
                 line = raw.strip()
                 if not line:
                     continue
-                r = parse_fn(line)
-                if r and query in r[1]:  # r[1] is the email
-                    batch.append(r[0])
-                    count += 1
-                    if len(batch) >= _WRITE_BATCH:
-                        outf.write("\n".join(batch) + "\n")
-                        batch.clear()
+
+                if is_combo:
+                    if ':' not in line or '@' not in line:
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    email = line.split(':', 1)[0].strip().lower()
+                    if query not in email:
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    if emails_only:
+                        if email in seen:
+                            if progress_cb and scanned % 50_000 == 0:
+                                try:
+                                    progress_cb(scanned, total_est)
+                                except Exception:
+                                    pass
+                            continue
+                        seen.add(email)
+                        batch.append(email)
+                    else:
+                        batch.append(line)
+                else:
+                    r = parse_fn(line)
+                    email = _extract_email(r)
+                    if not email or query not in email:
+                        if progress_cb and scanned % 50_000 == 0:
+                            try:
+                                progress_cb(scanned, total_est)
+                            except Exception:
+                                pass
+                        continue
+
+                    if emails_only:
+                        if email in seen:
+                            if progress_cb and scanned % 50_000 == 0:
+                                try:
+                                    progress_cb(scanned, total_est)
+                                except Exception:
+                                    pass
+                            continue
+                        seen.add(email)
+                        batch.append(email)
+                    else:
+                        batch.append(r[0])
+
+                count += 1
+                if len(batch) >= _WRITE_BATCH:
+                    outf.write("\n".join(batch) + "\n")
+                    batch.clear()
                 if progress_cb and scanned % 50_000 == 0:
                     try:
                         progress_cb(scanned, total_est)

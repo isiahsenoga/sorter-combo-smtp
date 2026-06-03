@@ -27,7 +27,7 @@ except ImportError:
 
 from processor import (
     process_dataset, delete_scanned_files,
-    extract_by_domain, extract_by_email, split_by_domains, split_folder_by_domains, master_path, reports_dir,
+    extract_by_domain, extract_by_email, split_by_domains, split_folder_by_domains, master_path, reports_dir, output_dir,
 )
 from analytics import export_report
 from scanner import DEFAULT_KEYWORDS
@@ -209,11 +209,12 @@ class ExtractWorker(QThread):
     finished = Signal(str, int)
     error    = Signal(str)
 
-    def __init__(self, query: str, mode: str, extract_type: str = "domain", source_file: str | None = None) -> None:
+    def __init__(self, query: str, mode: str, extract_type: str = "domain", emails_only: bool = False, source_file: str | None = None) -> None:
         super().__init__()
         self._query = query
         self._mode  = mode
         self._extract_type = extract_type  # "domain" or "email"
+        self._emails_only = emails_only
         self._source_file = source_file
 
     def run(self) -> None:
@@ -226,6 +227,7 @@ class ExtractWorker(QThread):
                     self._query,
                     mode=self._mode,
                     source_file=self._source_file,
+                    emails_only=self._emails_only,
                     progress_cb=cb
                 )
             else:
@@ -233,6 +235,7 @@ class ExtractWorker(QThread):
                     self._query,
                     mode=self._mode,
                     source_file=self._source_file,
+                    emails_only=self._emails_only,
                     progress_cb=cb
                 )
             self.finished.emit(path, count)
@@ -954,6 +957,12 @@ class ExtractorTab(QWidget):
         q_row.addWidget(self._extract_btn)
         root.addLayout(q_row)
 
+        self._emails_only_cb = QCheckBox("Email-only output")
+        self._emails_only_cb.setToolTip(
+            "Write only the matching email addresses instead of full entries."
+        )
+        root.addWidget(self._emails_only_cb)
+
         # Split many domains at once
         split_row = QHBoxLayout()
         split_row.addWidget(QLabel("Split (multi):"))
@@ -986,6 +995,15 @@ class ExtractorTab(QWidget):
         self._result_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         root.addWidget(self._result_lbl)
 
+        result_btn_row = QHBoxLayout()
+        self._view_output_btn = QPushButton("View Output Folder")
+        self._view_output_btn.setObjectName("view_output_btn")
+        self._view_output_btn.setFixedWidth(140)
+        self._view_output_btn.clicked.connect(self._on_view_output)
+        result_btn_row.addWidget(self._view_output_btn)
+        result_btn_row.addStretch()
+        root.addLayout(result_btn_row)
+
         root.addWidget(QLabel("Log:"))
         self._log = QTextEdit()
         self._log.setReadOnly(True)
@@ -996,6 +1014,16 @@ class ExtractorTab(QWidget):
         self._log.append(_log_html(text))
         sb = self._log.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def _on_view_output(self) -> None:
+        mode = (self._mode_combo.currentText() or "combo").strip().lower()
+        emails_only = self._emails_only_cb.isChecked()
+        folder = output_dir(mode, emails_only)
+        main_window = self.window()
+        if main_window and hasattr(main_window, "_open_directory"):
+            main_window._open_directory(folder)
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     @staticmethod
     def _parse_queries_text(text: str) -> list[str]:
@@ -1089,9 +1117,13 @@ class ExtractorTab(QWidget):
         self._ext_start_time = time.monotonic()
         self._result_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         self._result_lbl.setText("")
-        self._log_line(f"Extracting '{query}' (by {extract_type}) from {os.path.basename(source)}…")
+        emails_only = self._emails_only_cb.isChecked()
+        self._log_line(
+            f"Extracting '{query}' (by {extract_type}) from {os.path.basename(source)}"
+            + (" as emails only…" if emails_only else "…")
+        )
 
-        self._worker = ExtractWorker(query, mode, extract_type, source)
+        self._worker = ExtractWorker(query, mode, extract_type, emails_only, source)
         
         # Register worker with main window for cleanup
         main_window = self.window()
@@ -1362,7 +1394,10 @@ class ToolkitGUI(QMainWindow):
 
     def _on_open_output_folder(self) -> None:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-        self._open_directory(out_dir)
+        if os.path.exists(out_dir):
+            self._open_directory(out_dir)
+        else:
+            QMessageBox.information(self, "Output Folder", "No output folder found. Run an extraction first.")
 
     def _on_open_reports_folder(self) -> None:
         reports = reports_dir()

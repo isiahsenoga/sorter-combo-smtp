@@ -49,6 +49,8 @@ def main() -> None:
             print("No query entered.")
             sys.exit(0)
 
+        email_only = _yn("Output only email addresses?", default_yes=False)
+
         pbar = tqdm(total=0, unit="lines", desc="Extracting", file=sys.stdout)
 
         def on_ext_progress(done: int, total: int) -> None:
@@ -58,11 +60,17 @@ def main() -> None:
             pbar.n = done
             pbar.refresh()
 
-        out_path, count = extract_by_domain(query, mode=mode, progress_cb=on_ext_progress)
+        out_path, count = extract_by_domain(
+            query,
+            mode=mode,
+            emails_only=email_only,
+            progress_cb=on_ext_progress,
+        )
         pbar.close()
 
         if out_path:
-            print(f"\nExtracted {count:,} entries  →  {out_path}")
+            label = "emails" if email_only else "entries"
+            print(f"\nExtracted {count:,} {label}  →  {out_path}")
         else:
             print(f"\nNo entries found for '{query}'.")
         sys.exit(0)
