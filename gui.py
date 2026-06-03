@@ -19,8 +19,8 @@ try:
 except ImportError:
     from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (
-        QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+        QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame,
+        QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
         QMessageBox, QProgressBar, QPushButton, QSplitter,
         QTabWidget, QTextEdit, QVBoxLayout, QWidget,
     )

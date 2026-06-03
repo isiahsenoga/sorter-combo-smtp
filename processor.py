@@ -340,6 +340,80 @@ def _load_all_keys_from_db(db_path: str) -> set:
     return keys
 
 
+def _rebuild_db_from_old_master(
+    old_master_path: str,
+    db_path: str,
+    key_fn: Callable[[str], str | None],
+    status_cb: Optional[Callable[[str], None]] = None,
+    pause_check: Optional[Callable[[], bool]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> set:
+    """Migrate an old plaintext master file into the SQLite master database."""
+    keys: set[str] = set()
+    if not os.path.exists(old_master_path):
+        return keys
+
+    def _status(msg: str) -> None:
+        if status_cb:
+            try:
+                status_cb(msg)
+            except Exception:
+                pass
+
+    _status("Rebuilding database from legacy master file…")
+    try:
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _init_master_db(db_path)
+
+        batch: list[tuple[str, str]] = []
+        with open(old_master_path, "r", encoding="utf-8", errors="ignore") as infile:
+            for line in infile:
+                if cancel_check and cancel_check():
+                    raise InterruptedError
+                if pause_check:
+                    while not pause_check():
+                        time.sleep(0.1)
+
+                key = key_fn(line)
+                if not key or key in keys:
+                    continue
+
+                value = line.strip()
+                if not value:
+                    continue
+
+                keys.add(key)
+                batch.append((key, value))
+                if len(batch) >= _WRITE_BATCH:
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO entries (key, entry) VALUES (?, ?)",
+                        batch,
+                    )
+                    conn.commit()
+                    batch.clear()
+
+        if batch:
+            conn.executemany(
+                "INSERT OR REPLACE INTO entries (key, entry) VALUES (?, ?)",
+                batch,
+            )
+            conn.commit()
+
+        logger.info("Rebuilt %d keys from legacy master into %s", len(keys), db_path)
+    except InterruptedError:
+        logger.info("Legacy master rebuild cancelled")
+    except Exception as exc:
+        logger.error("Failed to rebuild database from old master: %s", exc)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    return keys
+
+
 def fresh_output_path(mode: str = "combo", line_count: int = 0) -> str:
     d = os.path.join(_base(), "output")
     os.makedirs(d, exist_ok=True)
