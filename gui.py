@@ -32,6 +32,13 @@ from processor import (
 from analytics import export_report
 from scanner import DEFAULT_KEYWORDS
 
+try:
+    import qdarkstyle
+    _HAS_QDARKSTYLE = True
+except ImportError:
+    qdarkstyle = None  # type: ignore[assignment]
+    _HAS_QDARKSTYLE = False
+
 logger = logging.getLogger(__name__)
 
 # ── theme ─────────────────────────────────────────────────────────────────────
@@ -1418,7 +1425,13 @@ class ToolkitGUI(QMainWindow):
 def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
     app = QApplication(sys.argv)
-    app.setStyleSheet(STYLESHEET)
+    if _HAS_QDARKSTYLE and qdarkstyle is not None:
+        try:
+            app.setStyleSheet(qdarkstyle.load_stylesheet(qt_api='pyside6'))
+        except Exception:
+            app.setStyleSheet(STYLESHEET)
+    else:
+        app.setStyleSheet(STYLESHEET)
     w = ToolkitGUI()
     w.show()
     sys.exit(app.exec())
