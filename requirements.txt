@@ -1,2 +1,3 @@
 PySide6>=6.6.0
 tqdm>=4.65.0
+qdarkstyle>=3.0.0

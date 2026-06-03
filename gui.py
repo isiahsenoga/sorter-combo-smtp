@@ -11,10 +11,10 @@ from PySide6.QtCore import Qt, QThread, QTimer, Signal, QStringListModel, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 try:
     from PySide6.QtWidgets import (
-        QAction, QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QGroupBox,
-        QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-        QMessageBox, QProgressBar, QPushButton, QSplitter,
-        QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+        QAction, QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame,
+        QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
+        QProgressBar, QPushButton, QSplitter, QSizePolicy, QTabWidget, QTextEdit,
+        QVBoxLayout, QWidget,
     )
 except ImportError:
     from PySide6.QtGui import QAction
@@ -61,12 +61,18 @@ QWidget#main_container { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
 
 QTabBar::tab:hover:!selected { background: #45475a; }
 
-QGroupBox { border: 1px solid #45475a; border-radius: 6px; margin-top: 10px; padding: 10px 8px 8px 8px;
-            font-weight: bold; color: #89b4fa; }
-QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 10px; padding: 0 4px; }
+QGroupBox { border: 1px solid #45475a; border-radius: 10px; margin-top: 10px; padding: 14px 12px 12px 12px;
+            font-weight: bold; color: #89b4fa; background: #1f1f33; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 14px; padding: 0 6px; }
 
-QLineEdit { background: #313244; border: 1px solid #45475a; border-radius: 4px;
-            padding: 5px 9px; color: #cdd6f4; selection-background-color: #89b4fa; }
+QFrame#card { background: #1f1f33; border: 1px solid #45475a; border-radius: 16px; padding: 18px; }
+QLabel#section_title { color: #f5c2e7; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+QLabel#card_subtitle { color: #a6adc8; font-size: 11px; line-height: 1.5; }
+
+QLineEdit, QComboBox { background: #252537; border: 1px solid #45475a; border-radius: 10px;
+            padding: 10px 14px; color: #cdd6f4; selection-background-color: #89b4fa; }
+QLineEdit:focus, QComboBox:focus { border-color: #89b4fa; }
+QLineEdit:disabled, QComboBox:disabled { color: #585b70; background: #1f1f33; }
 QLineEdit:focus { border-color: #89b4fa; }
 QLineEdit:disabled { color: #585b70; background: #1e1e2e; }
 
@@ -331,40 +337,53 @@ class ScannerTab(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setSpacing(8)
-        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(16)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        panel = QFrame()
+        panel.setObjectName("card")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setSpacing(16)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
 
         # Master path info
         self._master_lbl = QLabel()
         self._master_lbl.setObjectName("hint_lbl")
-        root.addWidget(self._master_lbl)
+        panel_layout.addWidget(self._master_lbl)
 
         mode_row = QHBoxLayout()
+        mode_row.setSpacing(12)
         mode_row.addWidget(QLabel("Mode:"))
         self._mode_selector = QComboBox()
         self._mode_selector.addItems(["combo", "smtp"])
         self._mode_selector.setCurrentText(self._mode)
         self._mode_selector.currentTextChanged.connect(lambda value: self._apply_mode())
+        self._mode_selector.setAccessibleName("Processing mode")
         mode_row.addWidget(self._mode_selector)
         mode_row.addStretch()
-        root.addLayout(mode_row)
+        panel_layout.addLayout(mode_row)
 
         # Folder row
-        root.addWidget(QLabel("Folder to scan:"))
+        folder_label = QLabel("Folder to scan")
+        folder_label.setObjectName("section_title")
+        panel_layout.addWidget(folder_label)
         row = QHBoxLayout()
+        row.setSpacing(12)
         self._folder = QLineEdit()
         self._folder.setPlaceholderText("Select or paste folder path…")
+        self._folder.setClearButtonEnabled(True)
+        self._folder.setAccessibleName("Scan folder path")
         browse = QPushButton("Browse…")
-        browse.setFixedWidth(90)
+        browse.setFixedWidth(100)
         browse.clicked.connect(self._on_browse)
-        row.addWidget(self._folder)
-        row.addWidget(browse)
-        root.addLayout(row)
+        row.addWidget(self._folder, 3)
+        row.addWidget(browse, 1)
+        panel_layout.addLayout(row)
 
         self._folder_hint = QLabel()
-        self._folder_hint.setObjectName("hint_lbl")
+        self._folder_hint.setObjectName("card_subtitle")
         self._folder_hint.setWordWrap(True)
-        root.addWidget(self._folder_hint)
+        panel_layout.addWidget(self._folder_hint)
         self._update_folder_hint()
 
         # ── Options group ─────────────────────────────────────────────────────
@@ -381,17 +400,21 @@ class ScannerTab(QWidget):
         grp_layout.addWidget(self._kw_cb)
 
         kw_row = QHBoxLayout()
+        kw_row.setSpacing(12)
         kw_row.addWidget(QLabel("Keywords:"))
         self._kw_edit = QLineEdit(",".join(DEFAULT_KEYWORDS))
         self._kw_edit.setEnabled(False)
+        self._kw_edit.setClearButtonEnabled(True)
+        self._kw_edit.setAccessibleName("Keyword filters")
         kw_row.addWidget(self._kw_edit)
         grp_layout.addLayout(kw_row)
 
         self._fmt_cb = QCheckBox("Skip non-matching files  (format check — samples 100 lines)")
         self._fmt_cb.setChecked(True)
+        self._fmt_cb.setAccessibleName("Format check option")
         grp_layout.addWidget(self._fmt_cb)
 
-        root.addWidget(grp)
+        panel_layout.addWidget(grp)
 
         # ── Auto-split group ──────────────────────────────────────────────────
         split_grp = QGroupBox("Auto-separate by domain  (splits fresh output after scan)")
@@ -415,11 +438,14 @@ class ScannerTab(QWidget):
         split_layout.addLayout(cb_row)
 
         custom_row = QHBoxLayout()
+        custom_row.setSpacing(12)
         custom_row.addWidget(QLabel("Custom:"))
         self._split_custom = QLineEdit()
         self._split_custom.setPlaceholderText(
             "space or comma separated — e.g.  .de   @t-online.de   web.de   .net"
         )
+        self._split_custom.setClearButtonEnabled(True)
+        self._split_custom.setAccessibleName("Custom split domains")
         # Autocomplete for common domains/TLDs
         domain_suggestions = QStringListModel([
             ".de", ".net", ".com", ".co.uk", ".ru", ".cn",
@@ -430,10 +456,10 @@ class ScannerTab(QWidget):
         domain_completer = QCompleter(domain_suggestions, self._split_custom)
         domain_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._split_custom.setCompleter(domain_completer)
-        custom_row.addWidget(self._split_custom)
+        custom_row.addWidget(self._split_custom, 1)
         split_layout.addLayout(custom_row)
 
-        root.addWidget(split_grp)
+        panel_layout.addWidget(split_grp)
 
         # ── Buttons ───────────────────────────────────────────────────────────
         btn_row = QHBoxLayout()
@@ -452,6 +478,7 @@ class ScannerTab(QWidget):
             "Permanently delete the input files that were just scanned.\n"
             "Their contents are already saved in the master file."
         )
+        self._delete_btn.setAccessibleName("Delete scanned files")
         self._start_btn.clicked.connect(self._on_start)
         self._pause_btn.clicked.connect(self._on_pause)
         self._cancel_btn.clicked.connect(self._on_cancel)
@@ -469,12 +496,12 @@ class ScannerTab(QWidget):
         btn_row.addWidget(self._view_output_btn)
         btn_row.addWidget(self._clear_btn)
         btn_row.addStretch()
-        root.addLayout(btn_row)
+        panel_layout.addLayout(btn_row)
 
         # ── Progress + status ─────────────────────────────────────────────────
         self._progress = QProgressBar()
         self._progress.setFormat("Idle")
-        root.addWidget(self._progress)
+        panel_layout.addWidget(self._progress)
 
         info_row = QHBoxLayout()
         self._status_lbl = QLabel("Idle")
@@ -483,14 +510,16 @@ class ScannerTab(QWidget):
         self._elapsed_lbl.setObjectName("elapsed_lbl")
         info_row.addWidget(self._status_lbl, stretch=1)
         info_row.addWidget(self._elapsed_lbl)
-        root.addLayout(info_row)
+        panel_layout.addLayout(info_row)
 
         eta_row = QHBoxLayout()
         self._eta_lbl = QLabel("")
         self._eta_lbl.setObjectName("hint_lbl")
         eta_row.addWidget(self._eta_lbl)
         eta_row.addStretch()
-        root.addLayout(eta_row)
+        panel_layout.addLayout(eta_row)
+
+        root.addWidget(panel)
 
         # ── Log (in a splitter so user can resize) ────────────────────────────
         splitter = QSplitter()
@@ -603,9 +632,12 @@ class ScannerTab(QWidget):
             self._folder_hint.setText("Select a folder to scan or browse to choose one.")
 
     def _on_view_output(self) -> None:
+        folder = output_dir(self._mode, emails_only=False)
         main_window = self.window()
-        if main_window and hasattr(main_window, "_on_open_output_folder"):
-            main_window._on_open_output_folder()
+        if main_window and hasattr(main_window, "_open_directory"):
+            main_window._open_directory(folder)
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _get_auto_split_queries(self) -> list[str]:
         split_queries: list[str] = []
@@ -889,64 +921,85 @@ class ExtractorTab(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setSpacing(10)
-        root.setContentsMargins(12, 10, 12, 10)
+        root.setSpacing(14)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        panel = QFrame()
+        panel.setObjectName("card")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setSpacing(16)
+        panel_layout.setContentsMargins(0, 0, 0, 0)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(12)
+        title = QLabel("Domain Extractor")
+        title.setObjectName("section_title")
+        header_row.addWidget(title)
+        header_row.addStretch()
+        self._master_info = QLabel()
+        self._master_info.setObjectName("hint_lbl")
+        header_row.addWidget(self._master_info)
+        panel_layout.addLayout(header_row)
 
         hint = QLabel(
-            "Extract all entries matching a domain/TLD or email from the master file or a custom file.\n"
-            "Examples:  de   .de   gmail.com   .net   yahoo   @t-online.de   user@gmail.com   john"
+            "Extract entries that match a domain/TLD or email from the master file or a custom source."
+            " Use the split option to create per-query outputs in one pass."
         )
-        hint.setObjectName("hint_lbl")
-        root.addWidget(hint)
+        hint.setObjectName("card_subtitle")
+        hint.setWordWrap(True)
+        panel_layout.addWidget(hint)
 
-        # Source mode and extraction type
+        controls_grp = QFrame()
+        controls_grp.setObjectName("card")
+        controls_layout = QVBoxLayout(controls_grp)
+        controls_layout.setSpacing(14)
+        controls_layout.setContentsMargins(12, 12, 12, 12)
+
         mode_row = QHBoxLayout()
+        mode_row.setSpacing(12)
         mode_row.addWidget(QLabel("Mode:"))
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(["combo", "smtp"])
         self._mode_combo.setCurrentIndex(0)
-        self._mode_combo.setEditable(False)
         self._mode_combo.setFixedWidth(120)
+        self._mode_combo.setAccessibleName("Extraction mode")
         self._mode_combo.currentIndexChanged.connect(lambda _: self._update_master_info())
         mode_row.addWidget(self._mode_combo)
-        
-        mode_row.addSpacing(30)
+
+        mode_row.addStretch(1)
         mode_row.addWidget(QLabel("Extract by:"))
         self._extract_type_combo = QComboBox()
         self._extract_type_combo.addItems(["Domain", "Email"])
         self._extract_type_combo.setCurrentIndex(0)
-        self._extract_type_combo.setEditable(False)
         self._extract_type_combo.setFixedWidth(120)
+        self._extract_type_combo.setAccessibleName("Extraction type")
         self._extract_type_combo.currentIndexChanged.connect(self._on_extract_type_changed)
         mode_row.addWidget(self._extract_type_combo)
-        mode_row.addStretch()
-        root.addLayout(mode_row)
+        controls_layout.addLayout(mode_row)
 
-        self._master_info = QLabel()
-        self._master_info.setObjectName("hint_lbl")
-        self._update_master_info()
-        root.addWidget(self._master_info)
-
-        # Custom source file (optional)
         source_row = QHBoxLayout()
-        source_row.addWidget(QLabel("Or split custom file:"))
+        source_row.setSpacing(12)
+        source_row.addWidget(QLabel("Source file:"))
         self._custom_file = QLineEdit()
         self._custom_file.setPlaceholderText("Leave empty to use master file… or browse a fresh output file")
+        self._custom_file.setClearButtonEnabled(True)
+        self._custom_file.setAccessibleName("Custom source file")
         browse_src = QPushButton("Browse…")
-        browse_src.setFixedWidth(90)
+        browse_src.setFixedWidth(100)
         browse_src.clicked.connect(self._on_browse_source)
-        source_row.addWidget(self._custom_file)
-        source_row.addWidget(browse_src)
-        root.addLayout(source_row)
+        source_row.addWidget(self._custom_file, 3)
+        source_row.addWidget(browse_src, 1)
+        controls_layout.addLayout(source_row)
 
-        # Query row with autocomplete
         q_row = QHBoxLayout()
+        q_row.setSpacing(12)
         self._query_label = QLabel("Domain / TLD:")
         q_row.addWidget(self._query_label)
         self._query = QLineEdit()
-        self._query.setPlaceholderText("e.g.  de   or   gmail.com   or   .net")
+        self._query.setPlaceholderText("e.g.  de  or  gmail.com  or  @t-online.de")
+        self._query.setClearButtonEnabled(True)
+        self._query.setAccessibleName("Domain or email query")
         self._query.returnPressed.connect(self._on_extract)
-        # Autocomplete suggestions
         query_suggestions = QStringListModel([
             "de", "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
             ".de", ".net", ".com", ".ru", ".cn", ".co.uk",
@@ -956,37 +1009,42 @@ class ExtractorTab(QWidget):
         query_completer = QCompleter(query_suggestions, self._query)
         query_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._query.setCompleter(query_completer)
-        q_row.addWidget(self._query)
+        q_row.addWidget(self._query, 3)
         self._extract_btn = QPushButton("Extract")
         self._extract_btn.setObjectName("start_btn")
-        self._extract_btn.setFixedWidth(100)
+        self._extract_btn.setFixedWidth(110)
         self._extract_btn.clicked.connect(self._on_extract)
         q_row.addWidget(self._extract_btn)
-        root.addLayout(q_row)
+        controls_layout.addLayout(q_row)
 
         self._emails_only_cb = QCheckBox("Email-only output")
         self._emails_only_cb.setToolTip(
             "Write only the matching email addresses instead of full entries."
         )
-        root.addWidget(self._emails_only_cb)
+        self._emails_only_cb.setAccessibleName("Email-only output option")
+        controls_layout.addWidget(self._emails_only_cb)
 
-        # Split many domains at once
         split_row = QHBoxLayout()
+        split_row.setSpacing(12)
         split_row.addWidget(QLabel("Split (multi):"))
         self._split_input = QLineEdit()
         self._split_input.setPlaceholderText("space or comma separated — e.g.  @gmail.com  .de  yahoo.com")
+        self._split_input.setClearButtonEnabled(True)
+        self._split_input.setAccessibleName("Multi-domain split queries")
         self._split_input.returnPressed.connect(self._on_split)
-        split_row.addWidget(self._split_input)
         self._split_btn = QPushButton("Split")
         self._split_btn.setObjectName("start_btn")
-        self._split_btn.setFixedWidth(100)
+        self._split_btn.setFixedWidth(110)
         self._split_btn.clicked.connect(self._on_split)
+        split_row.addWidget(self._split_input, 3)
         split_row.addWidget(self._split_btn)
-        root.addLayout(split_row)
+        controls_layout.addLayout(split_row)
+
+        panel_layout.addWidget(controls_grp)
 
         self._progress = QProgressBar()
         self._progress.setFormat("Idle")
-        root.addWidget(self._progress)
+        panel_layout.addWidget(self._progress)
 
         info_panel = QHBoxLayout()
         self._line_progress_lbl = QLabel("Lines scanned: 0")
@@ -995,26 +1053,29 @@ class ExtractorTab(QWidget):
         self._eta_lbl = QLabel("ETA: --")
         self._eta_lbl.setObjectName("hint_lbl")
         info_panel.addWidget(self._eta_lbl)
-        root.addLayout(info_panel)
+        panel_layout.addLayout(info_panel)
 
         self._result_lbl = QLabel("")
         self._result_lbl.setWordWrap(True)
         self._result_lbl.setStyleSheet("color: #a6e3a1; font-weight: bold;")
-        root.addWidget(self._result_lbl)
+        panel_layout.addWidget(self._result_lbl)
 
         result_btn_row = QHBoxLayout()
         self._view_output_btn = QPushButton("View Output Folder")
         self._view_output_btn.setObjectName("view_output_btn")
-        self._view_output_btn.setFixedWidth(140)
+        self._view_output_btn.setFixedWidth(150)
+        self._view_output_btn.setAccessibleName("Open output folder")
         self._view_output_btn.clicked.connect(self._on_view_output)
         result_btn_row.addWidget(self._view_output_btn)
         result_btn_row.addStretch()
-        root.addLayout(result_btn_row)
+        panel_layout.addLayout(result_btn_row)
 
+        root.addWidget(panel)
         root.addWidget(QLabel("Log:"))
         self._log = QTextEdit()
         self._log.setReadOnly(True)
         self._log.setFont(QFont("Consolas", 11))
+        self._log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         root.addWidget(self._log, stretch=1)
 
     def _log_line(self, text: str) -> None:
@@ -1335,9 +1396,10 @@ class ToolkitGUI(QMainWindow):
         self._all_workers: list = []
 
         tabs = QTabWidget()
-        tabs.addTab(ScannerTab("combo"), "  Scanner  ")
-        tabs.addTab(ScannerTab("smtp"),  "  Merge    ")
-        tabs.addTab(ExtractorTab(),      "  Domain Extractor  ")
+        tabs.setObjectName("main_container")
+        tabs.addTab(ScannerTab("combo"), "Scanner")
+        tabs.addTab(ScannerTab("smtp"),  "Merge")
+        tabs.addTab(ExtractorTab(),      "Extractor")
         self.setCentralWidget(tabs)
         self._create_menus()
         
@@ -1400,11 +1462,12 @@ class ToolkitGUI(QMainWindow):
             scanner_tab._folder.setText(path)
 
     def _on_open_output_folder(self) -> None:
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
-        if os.path.exists(out_dir):
-            self._open_directory(out_dir)
+        scanner_tab = self._current_scanner_tab()
+        if scanner_tab is not None:
+            out_dir = output_dir(scanner_tab._mode, emails_only=False)
         else:
-            QMessageBox.information(self, "Output Folder", "No output folder found. Run an extraction first.")
+            out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+        self._open_directory(out_dir)
 
     def _on_open_reports_folder(self) -> None:
         reports = reports_dir()

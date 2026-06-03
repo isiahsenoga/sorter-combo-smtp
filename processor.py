@@ -92,34 +92,31 @@ def _combo_full(line: str) -> tuple[str, str, str] | None:
 
 def _looks_like_host_token(p: str) -> bool:
     """True if token could reasonably be an SMTP host or hostname.
-    
-    Must be either:
-    - A dotted domain (smtp.example.com)
-    - A qualified bare hostname with SMTP-related keywords
-    
+
+    Accepts:
+    - Dotted domains (smtp.example.com)
+    - Bare hostnames with letters, digits, hyphens, or underscores
+
     Rejects:
-    - IPs (handled separately)
+    - IPs
     - Empty or whitespace
     - Tokens with @
-    - Pure numeric
-    - Single-letter tokens
-    - Generic usernames without SMTP semantics
+    - Pure numeric values
+    - Single-character tokens
+    - Tokens containing path separators
     """
     if not p or '@' in p or p.isdigit():
         return False
     if len(p) < 2:
+        return False
+    if any(sep in p for sep in ('/', '\\', ':')):
         return False
 
     if '.' in p:
         return bool(_HOSTNAME_RE.match(p))
 
     sanitized = p.replace('-', '').replace('_', '')
-    if not (sanitized.isalnum() and len(sanitized) >= 2):
-        return False
-
-    lower = p.lower()
-    smtp_keywords = ('smtp', 'mail', 'mx', 'relay', 'host', 'server')
-    return any(keyword in lower for keyword in smtp_keywords)
+    return bool(sanitized.isalnum() and len(sanitized) >= 2)
 
 
 def _smtp_full(line: str) -> tuple[str, str, str] | None:
@@ -213,6 +210,12 @@ def _smtp_full(line: str) -> tuple[str, str, str] | None:
     
     # Reject obviously invalid passwords (too common placeholders)
     if pw.lower() in ("none", "null", "n/a", "na", "pass", "password", "pwd"):
+        return None
+    
+    # Reject date-like values such as 5/13/1969 which are unlikely to be SMTP passwords.
+    if re.fullmatch(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", pw):
+        return None
+    if "\\" in pw:
         return None
 
     domain = email.split('@', 1)[1]
@@ -365,7 +368,7 @@ def reports_dir() -> str:
 def output_dir(mode: str = "combo", emails_only: bool = False) -> str:
     d = os.path.join(_base(), "output")
     if emails_only:
-        d = os.path.join(d, "email")
+        d = os.path.join(d, "email", mode)
     elif mode == "smtp":
         d = os.path.join(d, "smtp")
     else:
