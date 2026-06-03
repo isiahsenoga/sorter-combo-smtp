@@ -43,6 +43,24 @@ python main.py
 - CLI option to merge both combo + SMTP datasets in one run
 - Open output and reports folders directly from the GUI menu
 
+## Automation helper
+
+A scheduling helper script is available at `scripts/auto_commit_push.sh`.
+
+Example usage:
+
+```bash
+./scripts/auto_commit_push.sh "Auto scheduled commit"
+```
+
+To run on the current branch and push to `fork` if configured, add a cron job like:
+
+```bash
+crontab -e
+# Add:
+0 2 * * * cd /workspaces/sorter-combo-smtp && ./scripts/auto_commit_push.sh "Nightly auto commit" >> /tmp/auto_commit.log 2>&1
+```
+
 ## Data files explained
 
 - `data/combo/master.txt` — full deduplicated combo dataset
