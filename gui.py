@@ -22,7 +22,7 @@ except ImportError:
         QApplication, QCheckBox, QComboBox, QCompleter, QFileDialog, QFrame,
         QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
         QMessageBox, QProgressBar, QPushButton, QSplitter,
-        QTabWidget, QTextEdit, QVBoxLayout, QWidget,
+        QSizePolicy, QTabWidget, QTextEdit, QVBoxLayout, QWidget,
     )
 
 from processor import (
@@ -1382,6 +1382,194 @@ class ExtractorTab(QWidget):
         self._log_line(f"[ERROR] {msg}")
 
 
+# ── Worker: grab all emails from folder ───────────────────────────────────────
+
+class GrabWorker(QThread):
+    finished = Signal(str, int)
+    error = Signal(str)
+    progress = Signal(int, int)
+
+    def __init__(self, folder: str, query: str, emails_only: bool) -> None:
+        super().__init__()
+        self._folder = folder
+        self._query = query.strip().lower()
+        self._emails_only = emails_only
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        try:
+            email_re = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+            found: set[str] = set()
+            files = [f for f in os.listdir(self._folder) if os.path.isfile(os.path.join(self._folder, f))]
+            total = len(files)
+            processed = 0
+            for fn in files:
+                if self._cancel:
+                    break
+                path = os.path.join(self._folder, fn)
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                        data = fh.read()
+                except Exception:
+                    processed += 1
+                    self.progress.emit(processed, total)
+                    continue
+                for m in email_re.findall(data):
+                    em = m.strip()
+                    low = em.lower()
+                    if not self._query:
+                        found.add(low)
+                    else:
+                        q = self._query
+                        if q.startswith("@"):
+                            q = q.lstrip("@")
+                        if q.startswith('.'):
+                            if low.endswith(q):
+                                found.add(low)
+                        elif q in low:
+                            found.add(low)
+                processed += 1
+                self.progress.emit(processed, total)
+
+            out_dir = output_dir("combo", True)
+            os.makedirs(out_dir, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            qsafe = re.sub(r"[^a-z0-9._-]", "_", self._query or "all")
+            out_name = f"extract_emails_{qsafe}_{timestamp}.txt"
+            out_path = os.path.join(out_dir, out_name)
+            with open(out_path, "w", encoding="utf-8") as out_f:
+                for e in sorted(found):
+                    out_f.write(e + "\n")
+
+            self.finished.emit(out_path, len(found))
+        except Exception as exc:
+            logger.exception("GrabWorker failed")
+            self.error.emit(str(exc))
+
+
+# ── Grab Emails tab ──────────────────────────────────────────────────────────
+
+class GrabEmailsTab(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self._worker: GrabWorker | None = None
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+
+        panel = QFrame()
+        panel.setObjectName("card")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setSpacing(12)
+        panel_layout.setContentsMargins(12, 12, 12, 12)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Folder:"))
+        self._folder = QLineEdit()
+        self._folder.setPlaceholderText("Select folder containing input files…")
+        row.addWidget(self._folder, 3)
+        btn = QPushButton("Browse…")
+        btn.setFixedWidth(100)
+        btn.clicked.connect(self._on_browse)
+        row.addWidget(btn, 1)
+        panel_layout.addLayout(row)
+
+        qrow = QHBoxLayout()
+        qrow.addWidget(QLabel("Query (e.g. .de or gmail.com):"))
+        self._query = QLineEdit()
+        self._query.setPlaceholderText("Leave empty to grab all emails")
+        qrow.addWidget(self._query, 2)
+        self._emails_only_cb = QCheckBox("Emails-only output")
+        self._emails_only_cb.setChecked(True)
+        qrow.addWidget(self._emails_only_cb)
+        panel_layout.addLayout(qrow)
+
+        btn_row = QHBoxLayout()
+        self._start_btn = QPushButton("Grab Emails")
+        self._start_btn.setObjectName("start_btn")
+        self._start_btn.clicked.connect(self._on_start)
+        btn_row.addWidget(self._start_btn)
+        btn_row.addStretch()
+        panel_layout.addLayout(btn_row)
+
+        self._progress = QProgressBar()
+        self._progress.setFormat("Idle")
+        panel_layout.addWidget(self._progress)
+
+        panel_layout.addWidget(QLabel("Log:"))
+        self._log = QTextEdit()
+        self._log.setReadOnly(True)
+        self._log.setFont(QFont("Consolas", 11))
+        panel_layout.addWidget(self._log, stretch=1)
+
+        root.addWidget(panel)
+
+    def _log_line(self, text: str) -> None:
+        self._log.append(_log_html(text))
+        sb = self._log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    def _on_browse(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select folder")
+        if path:
+            self._folder.setText(path)
+
+    def _on_start(self) -> None:
+        folder = self._folder.text().strip().strip('"').strip("'")
+        if not folder or not os.path.isdir(folder):
+            self._log_line(f"[ERROR] Not a valid directory: {folder!r}")
+            return
+        query = self._query.text().strip()
+        emails_only = self._emails_only_cb.isChecked()
+
+        self._start_btn.setEnabled(False)
+        self._log.clear()
+        self._progress.setRange(0, 100)
+        self._progress.setValue(0)
+        self._progress.setFormat("Grabbing…")
+
+        self._worker = GrabWorker(folder, query, emails_only)
+        main_window = self.window()
+        if main_window and hasattr(main_window, 'register_worker'):
+            main_window.register_worker(self._worker)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._worker.error.connect(self._on_error)
+        self._worker.start()
+
+    def _on_progress(self, done: int, total: int) -> None:
+        if total:
+            pct = int(done / total * 100)
+            self._progress.setRange(0, 100)
+            self._progress.setValue(pct)
+            self._progress.setFormat(f"Files: {done}/{total}  ({pct}%)")
+        else:
+            self._progress.setRange(0, 0)
+            self._progress.setFormat(f"Files: {done}")
+
+    def _on_finished(self, path: str, count: int) -> None:
+        self._worker = None
+        self._start_btn.setEnabled(True)
+        self._progress.setValue(100)
+        self._progress.setFormat("Done")
+        if path:
+            self._log_line(f"✓  {count:,} unique emails written  →  {path}")
+        else:
+            self._log_line("No emails found.")
+
+    def _on_error(self, msg: str) -> None:
+        self._worker = None
+        self._start_btn.setEnabled(True)
+        self._progress.setFormat("Error")
+        self._log_line(f"[ERROR] {msg}")
+
+
 # ── Main window ───────────────────────────────────────────────────────────────
 
 class ToolkitGUI(QMainWindow):
@@ -1400,6 +1588,7 @@ class ToolkitGUI(QMainWindow):
         tabs.addTab(ScannerTab("combo"), "Scanner")
         tabs.addTab(ScannerTab("smtp"),  "Merge")
         tabs.addTab(ExtractorTab(),      "Extractor")
+        tabs.addTab(GrabEmailsTab(),     "Grab Emails")
         self.setCentralWidget(tabs)
         self._create_menus()
         
